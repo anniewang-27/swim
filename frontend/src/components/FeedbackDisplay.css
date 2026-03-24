@@ -1,0 +1,111 @@
+.feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.score-card {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.score-number {
+  font-size: 3rem;
+  font-weight: 700;
+  color: #0077b6;
+}
+
+.score-summary {
+  color: #555;
+  margin-top: 0.5rem;
+  font-size: 1.05rem;
+}
+
+.feedback-section {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.feedback-section h2 {
+  margin-bottom: 1rem;
+  font-size: 1.3rem;
+}
+
+.strengths-list {
+  list-style: none;
+  padding: 0;
+}
+
+.strengths-list li {
+  padding: 0.5rem 0;
+  padding-left: 1.5rem;
+  position: relative;
+}
+
+.strengths-list li::before {
+  content: "+";
+  position: absolute;
+  left: 0;
+  color: #27ae60;
+  font-weight: 700;
+}
+
+.issue-card {
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.issue-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.issue-header h3 {
+  font-size: 1.05rem;
+}
+
+.severity-badge {
+  color: white;
+  padding: 0.2rem 0.6rem;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.suggestion, .drill {
+  margin-top: 0.4rem;
+  color: #444;
+}
+
+.exercises-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1rem;
+}
+
+.exercise-card {
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.exercise-card h3 {
+  font-size: 1rem;
+  margin-bottom: 0.4rem;
+}
+
+.exercise-purpose {
+  margin-top: 0.4rem;
+  color: #666;
+  font-size: 0.9rem;
+}
