@@ -15,6 +15,92 @@ def _frame_to_base64(frame) -> str:
     return base64.b64encode(buf).decode("utf-8")
 
 
+def _gemini_request(api_key: str, parts: list, max_tokens: int = 256) -> str:
+    """Send a request to Gemini and return the last text part."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+
+    for attempt in range(3):
+        response = requests.post(url, json={
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": max_tokens,
+            }
+        })
+
+        if response.status_code == 429:
+            wait = 2 ** attempt
+            logger.warning(f"Gemini rate limited, retrying in {wait}s (attempt {attempt+1}/3)")
+            time.sleep(wait)
+            continue
+
+        if not response.ok:
+            raise Exception(f"Gemini API error ({response.status_code}): {response.text}")
+        break
+    else:
+        raise Exception("Gemini API rate limit — please wait a moment and try again")
+
+    data = response.json()
+    resp_parts = data["candidates"][0]["content"]["parts"]
+    response_text = ""
+    for part in resp_parts:
+        if "text" in part:
+            response_text = part["text"]
+    return response_text
+
+
+def detect_stroke(frames: list, pose_results: list) -> dict:
+    """
+    Send 2-3 frames to Gemini to identify the swimming stroke.
+    Returns {"detected_stroke": "freestyle", "confidence": "high"}.
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    # Pick 2-3 frames that have keypoints detected
+    selected = []
+    for i, result in enumerate(pose_results):
+        if len(result.get("keypoints", [])) > 0:
+            selected.append((i, result))
+        if len(selected) >= 3:
+            break
+
+    if not selected:
+        return {"detected_stroke": "unknown", "confidence": "low"}
+
+    parts = []
+    for i, result in selected:
+        b64 = _frame_to_base64(result["annotated_frame"])
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": b64,
+            }
+        })
+
+    parts.append({"text": """Look at these swimming video frames. What swimming stroke is being performed?
+
+Return ONLY a JSON object in this exact format, no other text:
+{"detected_stroke": "<freestyle|backstroke|breaststroke|butterfly|unknown>", "confidence": "<high|medium|low>"}"""})
+
+    logger.info(f"Detecting stroke from {len(selected)} frames...")
+    response_text = _gemini_request(api_key, parts)
+    logger.info(f"Stroke detection response: {response_text[:200]}")
+
+    # Parse response
+    response_text = response_text.strip()
+    if "```" in response_text:
+        response_text = response_text.split("```json")[-1].split("```")[0].strip()
+    if not response_text.startswith("{"):
+        start = response_text.find("{")
+        if start != -1:
+            response_text = response_text[start:]
+
+    try:
+        return json.loads(response_text)
+    except json.JSONDecodeError:
+        return {"detected_stroke": "unknown", "confidence": "low"}
+
+
 def get_swim_feedback(
     angles: list[dict],
     pose_results: list[dict],
@@ -88,47 +174,8 @@ Return ONLY valid JSON, no other text."""
 
     logger.info(f"Sending {sum(1 for p in parts if 'inline_data' in p)} images + text to Gemini")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-
-    # Retry up to 3 times on rate limit
-    for attempt in range(3):
-        response = requests.post(url, json={
-            "contents": [{"parts": parts}],
-            "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 8192,
-            }
-        })
-
-        if response.status_code == 429:
-            wait = 2 ** attempt
-            logger.warning(f"Gemini rate limited, retrying in {wait}s (attempt {attempt+1}/3)")
-            time.sleep(wait)
-            continue
-
-        if not response.ok:
-            raise Exception(f"Gemini API error ({response.status_code}): {response.text}")
-        break
-    else:
-        raise Exception("Gemini API rate limit — please wait a moment and try again")
-
-    data = response.json()
-
-    # Gemini 2.5 may return multiple parts (thinking + response)
-    # Grab the last text part which contains the actual answer
-    resp_parts = data["candidates"][0]["content"]["parts"]
-    response_text = ""
-    for part in resp_parts:
-        if "text" in part:
-            response_text = part["text"]
-
-    logger.info(f"Gemini returned {len(resp_parts)} parts")
-    for i, p in enumerate(resp_parts):
-        if "text" in p:
-            logger.info(f"  Part {i} (text, {len(p['text'])} chars): {p['text'][:100]}...")
-        elif "thought" in p:
-            logger.info(f"  Part {i} (thought, {len(p.get('thought',''))} chars)")
-    logger.info(f"Raw Gemini response (first 500 chars): {response_text[:500]}")
+    response_text = _gemini_request(api_key, parts, max_tokens=8192)
+    logger.info(f"Raw Gemini feedback (first 500 chars): {response_text[:500]}")
 
     # Strip markdown code fences if present
     response_text = response_text.strip()

@@ -41,7 +41,14 @@ function VideoUpload({ onFeedback, onLoading, onError }) {
     try {
       const res = await axios.post(`${API_URL}/analyze`, formData);
       console.log("API response:", JSON.stringify(res.data, null, 2));
-      onFeedback(res.data.feedback);
+
+      if (res.data.stroke_mismatch) {
+        onError(res.data.message);
+        // Auto-switch to the detected stroke
+        setStroke(res.data.detected_stroke);
+      } else {
+        onFeedback(res.data.feedback);
+      }
     } catch (err) {
       onError(err.response?.data?.detail || "Something went wrong. Please try again.");
     } finally {
