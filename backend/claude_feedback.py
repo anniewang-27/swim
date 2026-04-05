@@ -19,7 +19,7 @@ def _gemini_request(api_key: str, parts: list, max_tokens: int = 256) -> str:
     """Send a request to Gemini and return the last text part."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
 
-    for attempt in range(5):
+    for attempt in range(3):
         response = requests.post(url, json={
             "contents": [{"parts": parts}],
             "generationConfig": {
@@ -29,8 +29,8 @@ def _gemini_request(api_key: str, parts: list, max_tokens: int = 256) -> str:
         })
 
         if response.status_code in (429, 503):
-            wait = 5 * (attempt + 1)
-            logger.warning(f"Gemini {response.status_code}, retrying in {wait}s (attempt {attempt+1}/5)")
+            wait = 3 * (attempt + 1)
+            logger.warning(f"Gemini {response.status_code}, retrying in {wait}s (attempt {attempt+1}/3)")
             time.sleep(wait)
             continue
 
@@ -147,10 +147,9 @@ def get_swim_feedback(
     prompt = f"""You are an expert swim coach analyzing a swimmer's technique from a side-angle video.
 
 I'm providing you with:
-1. Annotated frame images from the swim video (with pose skeleton overlay)
-2. Original (clean) frame images for visual reference
-3. Joint angle data extracted from those frames
-4. Aggregate stroke metrics computed from the angle data
+1. Frame images from the swim video
+2. Joint angle data extracted from those frames (via pose estimation)
+3. Aggregate stroke metrics computed from the angle data
 
 {hint_line}
 
@@ -211,6 +210,7 @@ Return ONLY valid JSON, no other text."""
 
     # Build multimodal parts: limit to 5 frames to stay within rate limits
     parts = []
+    has_keypoints = False
 
     # Pick up to 5 frames that have keypoints, spread across the video
     valid_indices = [i for i, r in enumerate(pose_results)
@@ -219,25 +219,35 @@ Return ONLY valid JSON, no other text."""
         step = len(valid_indices) / 5
         valid_indices = [valid_indices[int(i * step)] for i in range(5)]
 
-    for i in valid_indices:
-        # Original frame for stroke identification
-        if i < len(frames):
-            b64_orig = _frame_to_base64(frames[i])
+    if valid_indices:
+        has_keypoints = True
+        for i in valid_indices:
+            # Send only original frames (less tokens) with angle data as text
+            if i < len(frames):
+                b64 = _frame_to_base64(frames[i])
+                parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": b64,
+                    }
+                })
+                parts.append({"text": f"[Frame {i} — angles: {json.dumps(angles[i], default=str)}]"})
+    else:
+        # No keypoints detected — send raw frames so Gemini can still identify stroke
+        logger.warning("No keypoints detected in any frame — sending raw frames only")
+        fallback_indices = list(range(len(frames)))
+        if len(fallback_indices) > 5:
+            step = len(fallback_indices) / 5
+            fallback_indices = [fallback_indices[int(i * step)] for i in range(5)]
+        for i in fallback_indices:
+            b64 = _frame_to_base64(frames[i])
             parts.append({
                 "inline_data": {
                     "mime_type": "image/jpeg",
-                    "data": b64_orig,
+                    "data": b64,
                 }
             })
-        # Annotated frame for technique analysis
-        b64_ann = _frame_to_base64(pose_results[i]["annotated_frame"])
-        parts.append({
-            "inline_data": {
-                "mime_type": "image/jpeg",
-                "data": b64_ann,
-            }
-        })
-        parts.append({"text": f"[Frame {i} — original + annotated — angles: {json.dumps(angles[i], default=str)}]"})
+            parts.append({"text": f"[Frame {i} — raw frame, no pose data available]"})
 
     # Add the main prompt at the end
     parts.append({"text": prompt})
@@ -264,13 +274,18 @@ Return ONLY valid JSON, no other text."""
     logger.info(f"Cleaned response (first 300 chars): {response_text[:300]}")
 
     try:
-        return json.loads(response_text)
+        result = json.loads(response_text)
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse failed: {e}")
-        return {
+        result = {
             "overall_score": None,
             "summary": response_text,
             "issues": [],
             "strengths": [],
             "dryland_exercises": [],
         }
+
+    if not has_keypoints:
+        result["pose_warning"] = "No body keypoints were detected — feedback is based on visual analysis only and may be less accurate. Try a video with clearer visibility of the swimmer's body."
+
+    return result

@@ -4,6 +4,24 @@
   gap: 1.5rem;
 }
 
+.detected-stroke {
+  background: white;
+  border-radius: 12px;
+  padding: 1rem 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  font-size: 1.1rem;
+  color: #333;
+}
+
+.warning-banner {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 12px;
+  padding: 1rem 1.5rem;
+  color: #856404;
+  font-size: 0.95rem;
+}
+
 .score-card {
   background: white;
   border-radius: 12px;
