@@ -19,18 +19,18 @@ def _gemini_request(api_key: str, parts: list, max_tokens: int = 256) -> str:
     """Send a request to Gemini and return the last text part."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
 
-    for attempt in range(3):
+    for attempt in range(5):
         response = requests.post(url, json={
             "contents": [{"parts": parts}],
             "generationConfig": {
-                "temperature": 0.3,
+                "temperature": 0.0,
                 "maxOutputTokens": max_tokens,
             }
         })
 
-        if response.status_code == 429:
-            wait = 2 ** attempt
-            logger.warning(f"Gemini rate limited, retrying in {wait}s (attempt {attempt+1}/3)")
+        if response.status_code in (429, 503):
+            wait = 5 * (attempt + 1)
+            logger.warning(f"Gemini {response.status_code}, retrying in {wait}s (attempt {attempt+1}/5)")
             time.sleep(wait)
             continue
 
@@ -38,7 +38,7 @@ def _gemini_request(api_key: str, parts: list, max_tokens: int = 256) -> str:
             raise Exception(f"Gemini API error ({response.status_code}): {response.text}")
         break
     else:
-        raise Exception("Gemini API rate limit — please wait a moment and try again")
+        raise Exception("Gemini API rate limit — please wait a minute and try again")
 
     data = response.json()
     resp_parts = data["candidates"][0]["content"]["parts"]
@@ -51,25 +51,41 @@ def _gemini_request(api_key: str, parts: list, max_tokens: int = 256) -> str:
 
 def detect_stroke(frames: list, pose_results: list) -> dict:
     """
-    Send 2-3 frames to Gemini to identify the swimming stroke.
+    Send ~5 frames from the middle of the video to Gemini to identify the swimming stroke.
     Returns {"detected_stroke": "freestyle", "confidence": "high"}.
     """
     api_key = os.getenv("GEMINI_API_KEY")
 
-    # Pick 2-3 frames that have keypoints detected
+    # Pick up to 5 frames from the middle portion of the video (where mid-stroke is likely)
+    # Avoid the first and last 20% of frames (often diving, turns, or finishing)
+    n = len(frames)
+    start_idx = max(0, n // 5)
+    end_idx = min(n, n - n // 5)
+    middle_frames = list(range(start_idx, end_idx))
+
+    # From the middle portion, pick frames that have keypoints
     selected = []
-    for i, result in enumerate(pose_results):
-        if len(result.get("keypoints", [])) > 0:
-            selected.append((i, result))
-        if len(selected) >= 3:
+    for i in middle_frames:
+        if i < len(pose_results) and len(pose_results[i].get("keypoints", [])) > 0:
+            selected.append(i)
+        if len(selected) >= 5:
             break
+
+    # Fallback: if not enough from middle, try all frames
+    if len(selected) < 2:
+        for i, result in enumerate(pose_results):
+            if i not in selected and len(result.get("keypoints", [])) > 0:
+                selected.append(i)
+            if len(selected) >= 5:
+                break
 
     if not selected:
         return {"detected_stroke": "unknown", "confidence": "low"}
 
+    # Send original frames (without skeleton overlay) for cleaner visual recognition
     parts = []
-    for i, result in selected:
-        b64 = _frame_to_base64(result["annotated_frame"])
+    for i in selected:
+        b64 = _frame_to_base64(frames[i])
         parts.append({
             "inline_data": {
                 "mime_type": "image/jpeg",
@@ -77,12 +93,19 @@ def detect_stroke(frames: list, pose_results: list) -> dict:
             }
         })
 
-    parts.append({"text": """Look at these swimming video frames. What swimming stroke is being performed?
+    parts.append({"text": """These are frames from a swimming video filmed from the side angle.
+Identify the swimming stroke being performed by looking at the arm movement pattern, kick style, and body position.
+
+Key differences:
+- Freestyle (front crawl): alternating overarm strokes, flutter kick, face in water with side breathing
+- Backstroke: on back, alternating arm rotation, flutter kick
+- Breaststroke: simultaneous arm sweep outward, frog/whip kick, body rises and dips
+- Butterfly: simultaneous overarm recovery, dolphin kick, undulating body motion
 
 Return ONLY a JSON object in this exact format, no other text:
 {"detected_stroke": "<freestyle|backstroke|breaststroke|butterfly|unknown>", "confidence": "<high|medium|low>"}"""})
 
-    logger.info(f"Detecting stroke from {len(selected)} frames...")
+    logger.info(f"Detecting stroke from {len(selected)} frames (indices: {selected})...")
     response_text = _gemini_request(api_key, parts)
     logger.info(f"Stroke detection response: {response_text[:200]}")
 
@@ -104,22 +127,53 @@ Return ONLY a JSON object in this exact format, no other text:
 def get_swim_feedback(
     angles: list[dict],
     pose_results: list[dict],
-    stroke: str,
+    frames: list,
+    stroke_hint: str = "",
+    stroke_metrics: dict = None,
 ) -> dict:
     """
-    Send angle data + annotated frame images to Gemini
-    and get structured swim technique feedback.
+    Send angle data + frame images to Gemini.
+    Gemini identifies the stroke itself and provides feedback for that stroke.
     """
     api_key = os.getenv("GEMINI_API_KEY")
 
     # Build a summary of the angle data across frames
     angle_summary = json.dumps(angles, indent=2, default=str)
+    metrics_summary = json.dumps(stroke_metrics, indent=2) if stroke_metrics else "Not available"
 
-    prompt = f"""You are an expert swim coach analyzing a swimmer's {stroke} technique.
+    # Don't tell Gemini the user's selection — it biases the detection
+    hint_line = "You MUST determine the stroke yourself from the images and angle data. Do NOT guess or assume — use the evidence."
+
+    prompt = f"""You are an expert swim coach analyzing a swimmer's technique from a side-angle video.
 
 I'm providing you with:
 1. Annotated frame images from the swim video (with pose skeleton overlay)
-2. Joint angle data extracted from those frames
+2. Original (clean) frame images for visual reference
+3. Joint angle data extracted from those frames
+4. Aggregate stroke metrics computed from the angle data
+
+{hint_line}
+
+STEP 1: Identify the swimming stroke using BOTH the images AND the angle metrics below.
+
+Stroke identification guide using angle metrics:
+- **Freestyle (front crawl)**: High left/right arm asymmetry (avg_left_right_elbow_diff > 15°, avg_left_right_shoulder_diff > 15°) because arms alternate. Moderate knee angles (140-170°) with flutter kick. Body is face-down.
+- **Backstroke**: High left/right arm asymmetry (alternating arms). Body is face-up (look at the images). Flutter kick with moderate knee angles.
+- **Breaststroke**: Low left/right asymmetry (arms and legs move together). Very deep knee bend (min_knee_angle < 100°). High knee_angle_variance as legs go from tucked to extended. Arms stay underwater.
+- **Butterfly**: Low left/right asymmetry (both arms move together). High hip_angle_variance (undulating body motion). Both arms recover over the water simultaneously. Dolphin kick with moderate knee angles.
+
+Key distinguishing factors:
+- Symmetrical arms + deep knee bend = BREASTSTROKE
+- Symmetrical arms + high hip variance + arms over water = BUTTERFLY
+- Alternating arms + face down = FREESTYLE
+- Alternating arms + face up = BACKSTROKE
+
+Aggregate stroke metrics:
+{metrics_summary}
+
+STEP 2: Then analyze technique for the stroke you identified.
+
+Note: The video is filmed from a side angle, so joint angles in the sagittal plane (elbow bend, knee bend, hip flexion) are most reliable. Angles involving depth (rotation, lateral movement) may be less accurate due to the 2D perspective.
 
 Joint angle data per frame (degrees):
 {angle_summary}
@@ -130,6 +184,8 @@ hip rotation, and overall streamline.
 
 Provide feedback in the following JSON format:
 {{
+  "detected_stroke": "<freestyle|backstroke|breaststroke|butterfly|unknown>",
+  "stroke_confidence": "<high|medium|low>",
   "overall_score": <1-10>,
   "summary": "<2-3 sentence overall assessment>",
   "issues": [
@@ -153,21 +209,35 @@ Provide feedback in the following JSON format:
 
 Return ONLY valid JSON, no other text."""
 
-    # Build multimodal parts: images + text prompt
+    # Build multimodal parts: limit to 5 frames to stay within rate limits
     parts = []
 
-    # Add annotated frames as images
-    for i, result in enumerate(pose_results):
-        frame = result.get("annotated_frame")
-        if frame is not None and len(result.get("keypoints", [])) > 0:
-            b64 = _frame_to_base64(frame)
+    # Pick up to 5 frames that have keypoints, spread across the video
+    valid_indices = [i for i, r in enumerate(pose_results)
+                     if r.get("annotated_frame") is not None and len(r.get("keypoints", [])) > 0]
+    if len(valid_indices) > 5:
+        step = len(valid_indices) / 5
+        valid_indices = [valid_indices[int(i * step)] for i in range(5)]
+
+    for i in valid_indices:
+        # Original frame for stroke identification
+        if i < len(frames):
+            b64_orig = _frame_to_base64(frames[i])
             parts.append({
                 "inline_data": {
                     "mime_type": "image/jpeg",
-                    "data": b64,
+                    "data": b64_orig,
                 }
             })
-            parts.append({"text": f"[Frame {i} — angles: {json.dumps(angles[i], default=str)}]"})
+        # Annotated frame for technique analysis
+        b64_ann = _frame_to_base64(pose_results[i]["annotated_frame"])
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": b64_ann,
+            }
+        })
+        parts.append({"text": f"[Frame {i} — original + annotated — angles: {json.dumps(angles[i], default=str)}]"})
 
     # Add the main prompt at the end
     parts.append({"text": prompt})

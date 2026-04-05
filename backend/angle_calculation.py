@@ -65,3 +65,69 @@ def calculate_all_angles(pose_results: list[dict]) -> list[dict]:
         calculate_angles_for_frame(result["keypoints"])
         for result in pose_results
     ]
+
+
+def compute_stroke_metrics(angles: list[dict]) -> dict:
+    """
+    Compute aggregate metrics from angle data across frames that help
+    distinguish between swimming strokes.
+    """
+    def _vals(key):
+        return [a[key] for a in angles if a.get(key) is not None]
+
+    def _avg(vals):
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    def _variance(vals):
+        if len(vals) < 2:
+            return None
+        mean = sum(vals) / len(vals)
+        return round(sum((v - mean) ** 2 for v in vals) / len(vals), 1)
+
+    left_knee = _vals("left_knee")
+    right_knee = _vals("right_knee")
+    left_hip = _vals("left_hip")
+    right_hip = _vals("right_hip")
+    left_elbow = _vals("left_elbow")
+    right_elbow = _vals("right_elbow")
+    left_shoulder = _vals("left_shoulder")
+    right_shoulder = _vals("right_shoulder")
+
+    # Symmetry: how similar are left/right sides frame by frame?
+    # Low difference = symmetrical movement (butterfly, breaststroke)
+    # High difference = alternating movement (freestyle, backstroke)
+    knee_diffs = []
+    for a in angles:
+        lk = a.get("left_knee")
+        rk = a.get("right_knee")
+        if lk is not None and rk is not None:
+            knee_diffs.append(abs(lk - rk))
+
+    elbow_diffs = []
+    for a in angles:
+        le = a.get("left_elbow")
+        re = a.get("right_elbow")
+        if le is not None and re is not None:
+            elbow_diffs.append(abs(le - re))
+
+    shoulder_diffs = []
+    for a in angles:
+        ls = a.get("left_shoulder")
+        rs = a.get("right_shoulder")
+        if ls is not None and rs is not None:
+            shoulder_diffs.append(abs(ls - rs))
+
+    return {
+        "avg_knee_angle": _avg(left_knee + right_knee),
+        "knee_angle_variance": _variance(left_knee + right_knee),
+        "avg_hip_angle": _avg(left_hip + right_hip),
+        "hip_angle_variance": _variance(left_hip + right_hip),
+        "avg_elbow_angle": _avg(left_elbow + right_elbow),
+        "elbow_angle_variance": _variance(left_elbow + right_elbow),
+        "avg_shoulder_angle": _avg(left_shoulder + right_shoulder),
+        "avg_left_right_knee_diff": _avg(knee_diffs),
+        "avg_left_right_elbow_diff": _avg(elbow_diffs),
+        "avg_left_right_shoulder_diff": _avg(shoulder_diffs),
+        "min_knee_angle": round(min(left_knee + right_knee), 1) if left_knee + right_knee else None,
+        "max_knee_angle": round(max(left_knee + right_knee), 1) if left_knee + right_knee else None,
+    }

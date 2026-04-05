@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 
 from video_processing import extract_key_frames
 from pose_estimation import estimate_poses
-from angle_calculation import calculate_all_angles
-from claude_feedback import get_swim_feedback, detect_stroke
+from angle_calculation import calculate_all_angles, compute_stroke_metrics
+from claude_feedback import get_swim_feedback
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -60,41 +60,34 @@ async def analyze_video(
         keypoint_counts = [len(r["keypoints"]) for r in pose_results]
         logger.info(f"[2/5] Done — keypoints per frame: {keypoint_counts} in {time.time()-t1:.1f}s")
 
-        t_stroke = time.time()
-        logger.info("[2.5/5] Detecting stroke type...")
-        stroke_result = detect_stroke(frames, pose_results)
-        detected = stroke_result.get("detected_stroke", "unknown")
-        confidence = stroke_result.get("confidence", "low")
-        logger.info(f"[2.5/5] Detected stroke: {detected} (confidence: {confidence}) in {time.time()-t_stroke:.1f}s")
-
-        if detected != "unknown" and detected != stroke.lower() and confidence in ("high", "medium"):
-            return JSONResponse(content={
-                "stroke_mismatch": True,
-                "selected_stroke": stroke,
-                "detected_stroke": detected,
-                "confidence": confidence,
-                "message": f"It looks like this video shows {detected}, but you selected {stroke}. Please select the correct stroke and try again.",
-            })
-
         t2 = time.time()
-        logger.info("[3/5] Calculating joint angles...")
+        logger.info("[3/4] Calculating joint angles...")
         angles = calculate_all_angles(pose_results)
         logger.info(f"[3/4] Done — angles for {len(angles)} frames in {time.time()-t2:.1f}s")
         for i, a in enumerate(angles):
             logger.info(f"  Frame {i}: {a}")
 
+        stroke_metrics = compute_stroke_metrics(angles)
+        logger.info(f"[3/4] Stroke metrics: {stroke_metrics}")
+
         t3 = time.time()
-        logger.info("[5/5] Sending data to Gemini API for feedback...")
+        logger.info("[4/4] Sending data to Gemini API for stroke detection + feedback...")
         feedback = get_swim_feedback(
             angles=angles,
             pose_results=pose_results,
-            stroke=stroke,
+            frames=frames,
+            stroke_hint=stroke,
+            stroke_metrics=stroke_metrics,
         )
-        logger.info(f"[5/5] Done — got feedback in {time.time()-t3:.1f}s")
+        detected = feedback.get("detected_stroke", "unknown")
+        confidence = feedback.get("stroke_confidence", "low")
+        logger.info(f"[4/4] Done — detected stroke: {detected} ({confidence}) — got feedback in {time.time()-t3:.1f}s")
         logger.info(f"Total pipeline time: {time.time()-t0:.1f}s")
 
         return JSONResponse(content={
-            "stroke": stroke,
+            "stroke_hint": stroke,
+            "detected_stroke": detected,
+            "detected_confidence": confidence,
             "frames_analyzed": len(frames),
             "feedback": feedback,
         })
