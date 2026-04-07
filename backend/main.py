@@ -67,7 +67,7 @@ async def analyze_video(
         for i, a in enumerate(angles):
             logger.info(f"  Frame {i}: {a}")
 
-        stroke_metrics = compute_stroke_metrics(angles)
+        stroke_metrics = compute_stroke_metrics(angles, pose_results)
         logger.info(f"[3/4] Stroke metrics: {stroke_metrics}")
 
         t3 = time.time()
@@ -76,7 +76,6 @@ async def analyze_video(
             angles=angles,
             pose_results=pose_results,
             frames=frames,
-            stroke_hint=stroke,
             stroke_metrics=stroke_metrics,
         )
         detected = feedback.get("detected_stroke", "unknown")
@@ -84,12 +83,21 @@ async def analyze_video(
         logger.info(f"[4/4] Done — detected stroke: {detected} ({confidence}) — got feedback in {time.time()-t3:.1f}s")
         logger.info(f"Total pipeline time: {time.time()-t0:.1f}s")
 
+        # Extract keypoints (without the annotated_frame images) for debug
+        keypoints_per_frame = [
+            {"frame": i, "keypoints": r["keypoints"]}
+            for i, r in enumerate(pose_results)
+        ]
+
         return JSONResponse(content={
             "stroke_hint": stroke,
             "detected_stroke": detected,
             "detected_confidence": confidence,
             "frames_analyzed": len(frames),
             "feedback": feedback,
+            "angles": angles,
+            "stroke_metrics": stroke_metrics,
+            "keypoints": keypoints_per_frame,
         })
     except Exception as e:
         logger.error(f"Pipeline failed: {type(e).__name__}: {e}")
