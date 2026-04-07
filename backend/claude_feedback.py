@@ -49,86 +49,11 @@ def _gemini_request(api_key: str, parts: list, max_tokens: int = 256) -> str:
     return response_text
 
 
-def detect_stroke(frames: list, pose_results: list) -> dict:
-    """
-    Send ~5 frames from the middle of the video to Gemini to identify the swimming stroke.
-    Returns {"detected_stroke": "freestyle", "confidence": "high"}.
-    """
-    api_key = os.getenv("GEMINI_API_KEY")
-
-    # Pick up to 5 frames from the middle portion of the video (where mid-stroke is likely)
-    # Avoid the first and last 20% of frames (often diving, turns, or finishing)
-    n = len(frames)
-    start_idx = max(0, n // 5)
-    end_idx = min(n, n - n // 5)
-    middle_frames = list(range(start_idx, end_idx))
-
-    # From the middle portion, pick frames that have keypoints
-    selected = []
-    for i in middle_frames:
-        if i < len(pose_results) and len(pose_results[i].get("keypoints", [])) > 0:
-            selected.append(i)
-        if len(selected) >= 5:
-            break
-
-    # Fallback: if not enough from middle, try all frames
-    if len(selected) < 2:
-        for i, result in enumerate(pose_results):
-            if i not in selected and len(result.get("keypoints", [])) > 0:
-                selected.append(i)
-            if len(selected) >= 5:
-                break
-
-    if not selected:
-        return {"detected_stroke": "unknown", "confidence": "low"}
-
-    # Send original frames (without skeleton overlay) for cleaner visual recognition
-    parts = []
-    for i in selected:
-        b64 = _frame_to_base64(frames[i])
-        parts.append({
-            "inline_data": {
-                "mime_type": "image/jpeg",
-                "data": b64,
-            }
-        })
-
-    parts.append({"text": """These are frames from a swimming video filmed from the side angle.
-Identify the swimming stroke being performed by looking at the arm movement pattern, kick style, and body position.
-
-Key differences:
-- Freestyle (front crawl): alternating overarm strokes, flutter kick, face in water with side breathing
-- Backstroke: on back, alternating arm rotation, flutter kick
-- Breaststroke: simultaneous arm sweep outward, frog/whip kick, body rises and dips
-- Butterfly: simultaneous overarm recovery, dolphin kick, undulating body motion
-
-Return ONLY a JSON object in this exact format, no other text:
-{"detected_stroke": "<freestyle|backstroke|breaststroke|butterfly|unknown>", "confidence": "<high|medium|low>"}"""})
-
-    logger.info(f"Detecting stroke from {len(selected)} frames (indices: {selected})...")
-    response_text = _gemini_request(api_key, parts)
-    logger.info(f"Stroke detection response: {response_text[:200]}")
-
-    # Parse response
-    response_text = response_text.strip()
-    if "```" in response_text:
-        response_text = response_text.split("```json")[-1].split("```")[0].strip()
-    if not response_text.startswith("{"):
-        start = response_text.find("{")
-        if start != -1:
-            response_text = response_text[start:]
-
-    try:
-        return json.loads(response_text)
-    except json.JSONDecodeError:
-        return {"detected_stroke": "unknown", "confidence": "low"}
-
 
 def get_swim_feedback(
     angles: list[dict],
     pose_results: list[dict],
     frames: list,
-    stroke_hint: str = "",
     stroke_metrics: dict = None,
 ) -> dict:
     """
@@ -155,17 +80,37 @@ I'm providing you with:
 
 STEP 1: Identify the swimming stroke using BOTH the images AND the angle metrics below.
 
-Stroke identification guide using angle metrics:
-- **Freestyle (front crawl)**: High left/right arm asymmetry (avg_left_right_elbow_diff > 15°, avg_left_right_shoulder_diff > 15°) because arms alternate. Moderate knee angles (140-170°) with flutter kick. Body is face-down.
-- **Backstroke**: High left/right arm asymmetry (alternating arms). Body is face-up (look at the images). Flutter kick with moderate knee angles.
-- **Breaststroke**: Low left/right asymmetry (arms and legs move together). Very deep knee bend (min_knee_angle < 100°). High knee_angle_variance as legs go from tucked to extended. Arms stay underwater.
-- **Butterfly**: Low left/right asymmetry (both arms move together). High hip_angle_variance (undulating body motion). Both arms recover over the water simultaneously. Dolphin kick with moderate knee angles.
+CRITICAL: Read the metrics carefully. The knee_bend_class and angle data are computed from actual body tracking — trust these numbers over your visual impression of the images.
 
-Key distinguishing factors:
-- Symmetrical arms + deep knee bend = BREASTSTROKE
-- Symmetrical arms + high hip variance + arms over water = BUTTERFLY
-- Alternating arms + face down = FREESTYLE
-- Alternating arms + face up = BACKSTROKE
+=== STROKE IDENTIFICATION RULES (check in this order) ===
+
+RULE 1 — Check body orientation in the images:
+- Is the swimmer face-UP (on their back)? → BACKSTROKE. Stop here.
+- Is the swimmer face-DOWN or sideways? → Continue to Rule 2.
+
+RULE 2 — Check knee bend (from knee_bend_class metric):
+- "very_deep" or "deep" (min_knee_angle < 120°) with HIGH knee_angle_variance → BREASTSTROKE (frog kick causes extreme knee bend that no other stroke has)
+- "straight" or "moderate" (min_knee_angle > 140°) → this is a flutter kick or dolphin kick → continue to Rule 3
+- Between 120-140° → ambiguous, continue to Rule 3
+
+RULE 3 — Check whole-body undulation (from undulation_class and body_undulation_score):
+- body_undulation_score measures average vertical movement of hips, chest, AND head across frames.
+- "high" undulation (score > 0.025) → strong BUTTERFLY signal. In butterfly, the ENTIRE body moves up and down like a worm — hips, chest, and head all undulate through the water.
+- "low" undulation (score < 0.012) → FREESTYLE. In freestyle, the body stays flat and stable in the y-axis with minimal vertical movement.
+- Also check kick_pattern: "synchronized" = both legs kick together (BUTTERFLY dolphin kick), "alternating" = legs alternate (FREESTYLE flutter kick)
+- Check individual parts: if avg_chest_y_delta AND avg_hip_y_delta are both elevated, the whole body is undulating → BUTTERFLY
+
+RULE 4 — If still ambiguous, check arm pattern in the images:
+- Both arms recover over the water simultaneously → BUTTERFLY
+- Arms alternate (one pulls while other recovers) → FREESTYLE
+
+=== CONFIDENCE CALIBRATION ===
+Be HONEST about confidence. Do NOT default to "high".
+- "high": Multiple rules clearly point to the same stroke AND the images clearly show the stroke pattern
+- "medium": Rules point to one stroke but images are unclear, OR rules are ambiguous but images suggest a stroke
+- "low": Rules conflict with each other, or data is missing/sparse, or you are not sure
+
+If the angle metrics are mostly null/None, your confidence should be "medium" at best since you only have images.
 
 Aggregate stroke metrics:
 {metrics_summary}
@@ -185,6 +130,7 @@ Provide feedback in the following JSON format:
 {{
   "detected_stroke": "<freestyle|backstroke|breaststroke|butterfly|unknown>",
   "stroke_confidence": "<high|medium|low>",
+  "stroke_reasoning": "<brief explanation of how you identified the stroke>",
   "overall_score": <1-10>,
   "summary": "<2-3 sentence overall assessment>",
   "issues": [
@@ -210,7 +156,7 @@ Return ONLY valid JSON, no other text."""
 
     # Build multimodal parts: limit to 5 frames to stay within rate limits
     parts = []
-    has_keypoints = False
+    has_keypoints = False  # track if pose data is available
 
     # Pick up to 5 frames that have keypoints, spread across the video
     valid_indices = [i for i, r in enumerate(pose_results)
@@ -222,7 +168,6 @@ Return ONLY valid JSON, no other text."""
     if valid_indices:
         has_keypoints = True
         for i in valid_indices:
-            # Send only original frames (less tokens) with angle data as text
             if i < len(frames):
                 b64 = _frame_to_base64(frames[i])
                 parts.append({
@@ -232,22 +177,6 @@ Return ONLY valid JSON, no other text."""
                     }
                 })
                 parts.append({"text": f"[Frame {i} — angles: {json.dumps(angles[i], default=str)}]"})
-    else:
-        # No keypoints detected — send raw frames so Gemini can still identify stroke
-        logger.warning("No keypoints detected in any frame — sending raw frames only")
-        fallback_indices = list(range(len(frames)))
-        if len(fallback_indices) > 5:
-            step = len(fallback_indices) / 5
-            fallback_indices = [fallback_indices[int(i * step)] for i in range(5)]
-        for i in fallback_indices:
-            b64 = _frame_to_base64(frames[i])
-            parts.append({
-                "inline_data": {
-                    "mime_type": "image/jpeg",
-                    "data": b64,
-                }
-            })
-            parts.append({"text": f"[Frame {i} — raw frame, no pose data available]"})
 
     # Add the main prompt at the end
     parts.append({"text": prompt})
