@@ -50,6 +50,9 @@ function VideoUpload({ onFeedback, onLoading, onError }) {
           detected_confidence: res.data.detected_confidence,
           frames_analyzed: res.data.frames_analyzed,
         },
+        _angles: res.data.angles,
+        _stroke_metrics: res.data.stroke_metrics,
+        _keypoints: res.data.keypoints,
       });
     } catch (err) {
       onError(err.response?.data?.detail || "Something went wrong. Please try again.");

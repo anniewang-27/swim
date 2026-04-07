@@ -35,6 +35,18 @@ function App() {
           <>
             <FeedbackDisplay feedback={feedback} />
             <details style={{marginTop: "1rem"}}>
+              <summary>Debug: Stroke Metrics</summary>
+              <pre style={{fontSize: "0.8rem", overflow: "auto"}}>{JSON.stringify(feedback._stroke_metrics, null, 2)}</pre>
+            </details>
+            <details style={{marginTop: "0.5rem"}}>
+              <summary>Debug: Angles per Frame</summary>
+              <pre style={{fontSize: "0.8rem", overflow: "auto"}}>{JSON.stringify(feedback._angles, null, 2)}</pre>
+            </details>
+            <details style={{marginTop: "0.5rem"}}>
+              <summary>Debug: MediaPipe Keypoints per Frame</summary>
+              <pre style={{fontSize: "0.8rem", overflow: "auto"}}>{JSON.stringify(feedback._keypoints, null, 2)}</pre>
+            </details>
+            <details style={{marginTop: "0.5rem"}}>
               <summary>Debug: Raw API response</summary>
               <pre style={{fontSize: "0.8rem", overflow: "auto"}}>{JSON.stringify(feedback, null, 2)}</pre>
             </details>

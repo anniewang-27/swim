@@ -16,6 +16,7 @@ function FeedbackDisplay({ feedback }) {
         <div className="detected-stroke">
           Detected stroke: <strong>{feedback.detected_stroke}</strong>
           {feedback.stroke_confidence && <span> ({feedback.stroke_confidence} confidence)</span>}
+          {feedback.stroke_reasoning && <p className="stroke-reasoning">{feedback.stroke_reasoning}</p>}
         </div>
       )}
 
