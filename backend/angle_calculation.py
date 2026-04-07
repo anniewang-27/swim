@@ -67,7 +67,7 @@ def calculate_all_angles(pose_results: list[dict]) -> list[dict]:
     ]
 
 
-def compute_stroke_metrics(angles: list[dict]) -> dict:
+def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) -> dict:
     """
     Compute aggregate metrics from angle data across frames that help
     distinguish between swimming strokes.
@@ -117,9 +117,100 @@ def compute_stroke_metrics(angles: list[dict]) -> dict:
         if ls is not None and rs is not None:
             shoulder_diffs.append(abs(ls - rs))
 
+    all_knee = left_knee + right_knee
+    knee_range = (round(max(all_knee) - min(all_knee), 1)) if len(all_knee) >= 2 else None
+
+    # Classify knee bend pattern
+    avg_knee = _avg(all_knee)
+    min_knee = round(min(all_knee), 1) if all_knee else None
+    if avg_knee is not None and min_knee is not None:
+        if min_knee < 90:
+            knee_bend_class = "very_deep"  # strong breaststroke signal
+        elif min_knee < 120:
+            knee_bend_class = "deep"  # breaststroke or butterfly
+        elif min_knee < 150:
+            knee_bend_class = "moderate"  # could be any stroke
+        else:
+            knee_bend_class = "straight"  # freestyle or backstroke flutter kick
+    else:
+        knee_bend_class = "unknown"
+
+    # Body undulation: track vertical (y) position of hips, chest, and head across frames
+    # Butterfly: entire body undulates like a wave (hips, chest, head all move up/down)
+    # Freestyle: body stays flat and stable in the y axis
+    hip_y_values = []
+    chest_y_values = []
+    head_y_values = []
+    if pose_results:
+        for result in pose_results:
+            kps = result.get("keypoints", [])
+            left_hip_kp = _get_landmark(kps, "LEFT_HIP")
+            right_hip_kp = _get_landmark(kps, "RIGHT_HIP")
+            left_shoulder_kp = _get_landmark(kps, "LEFT_SHOULDER")
+            right_shoulder_kp = _get_landmark(kps, "RIGHT_SHOULDER")
+            nose_kp = _get_landmark(kps, "NOSE")
+            if left_hip_kp and right_hip_kp:
+                hip_y_values.append((left_hip_kp["y"] + right_hip_kp["y"]) / 2)
+            if left_shoulder_kp and right_shoulder_kp:
+                chest_y_values.append((left_shoulder_kp["y"] + right_shoulder_kp["y"]) / 2)
+            if nose_kp:
+                head_y_values.append(nose_kp["y"])
+
+    # Frame-to-frame vertical movement for each body part
+    hip_y_deltas = [abs(hip_y_values[i] - hip_y_values[i - 1]) for i in range(1, len(hip_y_values))]
+    chest_y_deltas = [abs(chest_y_values[i] - chest_y_values[i - 1]) for i in range(1, len(chest_y_values))]
+    head_y_deltas = [abs(head_y_values[i] - head_y_values[i - 1]) for i in range(1, len(head_y_values))]
+
+    avg_hip_y_delta = _avg(hip_y_deltas)
+    avg_chest_y_delta = _avg(chest_y_deltas)
+    avg_head_y_delta = _avg(head_y_deltas)
+
+    # Combined undulation score: average vertical movement across all tracked body parts
+    # Butterfly moves the whole body; freestyle keeps everything stable
+    all_deltas = [d for d in [avg_hip_y_delta, avg_chest_y_delta, avg_head_y_delta] if d is not None]
+    body_undulation_score = _avg(all_deltas)
+
+    # Classify undulation based on whole-body movement
+    if body_undulation_score is not None:
+        if body_undulation_score > 0.025:
+            undulation_class = "high"  # strong butterfly signal — whole body waves
+        elif body_undulation_score > 0.012:
+            undulation_class = "moderate"  # possible butterfly
+        else:
+            undulation_class = "low"  # freestyle or backstroke — body stays flat
+    else:
+        undulation_class = "unknown"
+
+    # Knee synchronization: are both knees bending together (butterfly/breaststroke)
+    # or alternating (freestyle/backstroke)?
+    # Compute correlation-like metric: low diff = synchronized, high diff = alternating
+    knee_sync_scores = []
+    for a in angles:
+        lk = a.get("left_knee")
+        rk = a.get("right_knee")
+        if lk is not None and rk is not None:
+            # Normalized difference: 0 = perfectly synced, 1 = very different
+            max_val = max(lk, rk)
+            if max_val > 0:
+                knee_sync_scores.append(abs(lk - rk) / max_val)
+    avg_knee_sync = _avg(knee_sync_scores)
+    if avg_knee_sync is not None:
+        if avg_knee_sync < 0.05:
+            kick_pattern = "synchronized"  # butterfly or breaststroke
+        elif avg_knee_sync < 0.15:
+            kick_pattern = "mostly_synchronized"
+        else:
+            kick_pattern = "alternating"  # freestyle or backstroke
+    else:
+        kick_pattern = "unknown"
+
     return {
-        "avg_knee_angle": _avg(left_knee + right_knee),
-        "knee_angle_variance": _variance(left_knee + right_knee),
+        "avg_knee_angle": avg_knee,
+        "knee_angle_variance": _variance(all_knee),
+        "knee_angle_range": knee_range,
+        "knee_bend_class": knee_bend_class,
+        "min_knee_angle": min_knee,
+        "max_knee_angle": round(max(all_knee), 1) if all_knee else None,
         "avg_hip_angle": _avg(left_hip + right_hip),
         "hip_angle_variance": _variance(left_hip + right_hip),
         "avg_elbow_angle": _avg(left_elbow + right_elbow),
@@ -128,6 +219,17 @@ def compute_stroke_metrics(angles: list[dict]) -> dict:
         "avg_left_right_knee_diff": _avg(knee_diffs),
         "avg_left_right_elbow_diff": _avg(elbow_diffs),
         "avg_left_right_shoulder_diff": _avg(shoulder_diffs),
-        "min_knee_angle": round(min(left_knee + right_knee), 1) if left_knee + right_knee else None,
-        "max_knee_angle": round(max(left_knee + right_knee), 1) if left_knee + right_knee else None,
+        "hip_y_values": [round(v, 4) for v in hip_y_values],
+        "hip_y_deltas": [round(d, 4) for d in hip_y_deltas],
+        "chest_y_values": [round(v, 4) for v in chest_y_values],
+        "chest_y_deltas": [round(d, 4) for d in chest_y_deltas],
+        "head_y_values": [round(v, 4) for v in head_y_values],
+        "head_y_deltas": [round(d, 4) for d in head_y_deltas],
+        "avg_hip_y_delta": avg_hip_y_delta,
+        "avg_chest_y_delta": avg_chest_y_delta,
+        "avg_head_y_delta": avg_head_y_delta,
+        "body_undulation_score": body_undulation_score,
+        "undulation_class": undulation_class,
+        "kick_pattern": kick_pattern,
+        "avg_knee_sync": avg_knee_sync,
     }
