@@ -4,13 +4,16 @@
   gap: 1.5rem;
 }
 
-.detected-stroke {
-  background: white;
-  border-radius: 12px;
-  padding: 1rem 1.5rem;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  font-size: 1.1rem;
-  color: #333;
+.detected-stroke-label {
+  font-size: 1rem;
+  color: #555;
+  margin-bottom: 0.75rem;
+  text-transform: capitalize;
+}
+
+.detected-stroke-label strong {
+  color: #0077b6;
+  font-size: 1.15rem;
 }
 
 .stroke-reasoning {
