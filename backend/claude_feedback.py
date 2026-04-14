@@ -90,16 +90,15 @@ RULE 1 — First separate out breaststroke:
 - If knee_bend_class is "very_deep" or "deep" AND min_knee_angle < 120° with substantial knee bending variability, that is a strong BREASTSTROKE signal.
 - Breaststroke is the only stroke here with a pronounced frog kick and extreme knee bend.
 
-RULE 2 — Then check for butterfly:
+RULE 2 — Then check for butterfly (undulation takes priority over arm pattern):
 - body_undulation_score measures how strongly the head, chest, and hips are pushed DOWN through the stroke cycle.
 - The metrics hip_downward_press, chest_downward_press, and head_downward_press measure downward press amplitude for each body part.
 - wave_downward_ratio measures how often the body shows a wave-like downward sequence where the chest presses down first and the hips follow.
-- If undulation_class is "high", especially with clear downward press in chest and hips together, that is a strong BUTTERFLY signal.
-- If kick_pattern is "synchronized", that further supports BUTTERFLY.
-- If both arms appear to recover together over the water, that strongly supports BUTTERFLY.
+- **If undulation_class is "high" and Rule 1 did NOT identify breaststroke, classify as BUTTERFLY.** High undulation is the defining feature of butterfly — trust this metric over arm alternation cues. Even if the arms APPEAR to alternate, high whole-body undulation means butterfly.
+- Synchronized kick_pattern and simultaneous over-water arm recovery further support BUTTERFLY but are NOT required when undulation is high.
 
-RULE 3 — If the swimmer has low undulation and an alternating kick, the stroke is likely either FREESTYLE or BACKSTROKE:
-- low undulation + alternating kick should NOT automatically mean freestyle.
+RULE 3 — If the swimmer has LOW undulation, the stroke is likely either FREESTYLE or BACKSTROKE:
+- Low undulation + alternating kick should NOT automatically mean freestyle.
 - In this case, explicitly decide between FREESTYLE and BACKSTROKE using body orientation, face visibility, and arm recovery path.
 
 RULE 4 — Distinguish backstroke from freestyle using visual cues:
@@ -141,23 +140,28 @@ Analyze BOTH the images and the angle data to provide technique feedback.
 Look at body position, head alignment, arm entry, catch position, kick depth,
 hip rotation, and overall streamline.
 
+IMPORTANT — Write feedback for a swimmer, NOT a developer:
+- Do NOT mention specific degree numbers, frame numbers, or angle measurements in your output.
+- Do NOT reference "Frame 3" or "knee angle 142°" or metric names like "hip_downward_press".
+- Use plain, descriptive language a swimmer would understand (e.g. "your knees bend too much during the kick" instead of "knee angle of 105°").
+- Describe what you observed in human terms: body position, timing, smoothness, power, alignment.
+
 Provide feedback in the following JSON format:
 {{
   "detected_stroke": "<freestyle|backstroke|breaststroke|butterfly|unknown>",
   "stroke_confidence": "<high|medium|low>",
-  "stroke_reasoning": "<brief explanation of how you identified the stroke>",
   "overall_score": <1-10>,
-  "summary": "<2-3 sentence overall assessment>",
+  "summary": "<2-3 sentence overall assessment in plain language>",
   "issues": [
     {{
       "title": "<short issue name>",
       "severity": "<low|medium|high>",
-      "description": "<what you observed>",
-      "suggestion": "<how to fix it>",
+      "description": "<what you observed, in plain language with no numbers>",
+      "suggestion": "<how to fix it, in plain language>",
       "drill": "<a specific drill or exercise to improve this>"
     }}
   ],
-  "strengths": ["<thing they're doing well>"],
+  "strengths": ["<thing they're doing well, in plain language>"],
   "dryland_exercises": [
     {{
       "name": "<exercise name>",
