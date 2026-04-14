@@ -43,6 +43,10 @@ function App() {
               <pre style={{fontSize: "0.8rem", overflow: "auto"}}>{JSON.stringify(feedback._angles, null, 2)}</pre>
             </details>
             <details style={{marginTop: "0.5rem"}}>
+              <summary>Debug: Why Angles Were Missing</summary>
+              <pre style={{fontSize: "0.8rem", overflow: "auto"}}>{JSON.stringify(feedback._angleDebug, null, 2)}</pre>
+            </details>
+            <details style={{marginTop: "0.5rem"}}>
               <summary>Debug: MediaPipe Keypoints per Frame</summary>
               <pre style={{fontSize: "0.8rem", overflow: "auto"}}>{JSON.stringify(feedback._keypoints, null, 2)}</pre>
             </details>

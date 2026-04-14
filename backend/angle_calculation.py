@@ -47,6 +47,27 @@ ANGLE_DEFINITIONS = [
 ]
 
 
+def _angle_debug_info(a: dict | None, b: dict | None, c: dict | None) -> dict:
+    missing = []
+    low_visibility = []
+
+    for label, pt in (("a", a), ("b", b), ("c", c)):
+        if pt is None:
+            missing.append(label)
+            continue
+        if pt.get("visibility", 0) < 0.5:
+            low_visibility.append({
+                "point": label,
+                "name": pt.get("name"),
+                "visibility": round(pt.get("visibility", 0), 3),
+            })
+
+    return {
+        "missing_points": missing,
+        "low_visibility_points": low_visibility,
+    }
+
+
 def calculate_angles_for_frame(keypoints: list[dict]) -> dict:
     """Calculate all relevant joint angles for a single frame's keypoints."""
     angles: dict = {}
@@ -59,11 +80,41 @@ def calculate_angles_for_frame(keypoints: list[dict]) -> dict:
     return angles
 
 
+def debug_angles_for_frame(keypoints: list[dict]) -> dict:
+    """Explain why each angle was or was not available for a frame."""
+    debug: dict = {}
+    for label, a_name, b_name, c_name in ANGLE_DEFINITIONS:
+        a = _get_landmark(keypoints, a_name)
+        b = _get_landmark(keypoints, b_name)
+        c = _get_landmark(keypoints, c_name)
+        angle = _angle_between(a, b, c) if a and b and c else None
+        info = _angle_debug_info(a, b, c)
+        debug[label] = {
+            "angle": angle,
+            "required_landmarks": [a_name, b_name, c_name],
+            "status": "ok" if angle is not None else "missing_or_low_visibility",
+            **info,
+        }
+    return debug
+
+
 def calculate_all_angles(pose_results: list[dict]) -> list[dict]:
     """Calculate angles across all frames."""
     return [
         calculate_angles_for_frame(result["keypoints"])
         for result in pose_results
+    ]
+
+
+def debug_all_angles(pose_results: list[dict]) -> list[dict]:
+    """Return per-frame debug info for each tracked angle."""
+    return [
+        {
+            "frame": i,
+            "detected_keypoints": len(result["keypoints"]),
+            "angles": debug_angles_for_frame(result["keypoints"]),
+        }
+        for i, result in enumerate(pose_results)
     ]
 
 
@@ -83,6 +134,19 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
             return None
         mean = sum(vals) / len(vals)
         return round(sum((v - mean) ** 2 for v in vals) / len(vals), 1)
+
+    def _range(vals):
+        return round(max(vals) - min(vals), 4) if len(vals) >= 2 else None
+
+    def _avg_abs_step(vals):
+        deltas = [abs(vals[i] - vals[i - 1]) for i in range(1, len(vals))]
+        return _avg(deltas), deltas
+
+    def _downward_press(vals):
+        if len(vals) < 2:
+            return None
+        baseline = min(vals)
+        return round(max(v - baseline for v in vals), 4)
 
     left_knee = _vals("left_knee")
     right_knee = _vals("right_knee")
@@ -135,9 +199,9 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
     else:
         knee_bend_class = "unknown"
 
-    # Body undulation: track vertical (y) position of hips, chest, and head across frames
-    # Butterfly: entire body undulates like a wave (hips, chest, head all move up/down)
-    # Freestyle: body stays flat and stable in the y axis
+    # Body undulation: track how far head, chest, and hips are pushed DOWN
+    # through the stroke. In image coordinates, larger y means lower in frame.
+    # Butterfly should show larger synchronized downward press across these parts.
     hip_y_values = []
     chest_y_values = []
     head_y_values = []
@@ -156,25 +220,59 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
             if nose_kp:
                 head_y_values.append(nose_kp["y"])
 
-    # Frame-to-frame vertical movement for each body part
-    hip_y_deltas = [abs(hip_y_values[i] - hip_y_values[i - 1]) for i in range(1, len(hip_y_values))]
-    chest_y_deltas = [abs(chest_y_values[i] - chest_y_values[i - 1]) for i in range(1, len(chest_y_values))]
-    head_y_deltas = [abs(head_y_values[i] - head_y_values[i - 1]) for i in range(1, len(head_y_values))]
+    # Frame-to-frame movement still helps, but the main butterfly signal we want is
+    # the amplitude of the downward press for head, chest, and hips.
+    avg_hip_y_delta, hip_y_deltas = _avg_abs_step(hip_y_values)
+    avg_chest_y_delta, chest_y_deltas = _avg_abs_step(chest_y_values)
+    avg_head_y_delta, head_y_deltas = _avg_abs_step(head_y_values)
 
-    avg_hip_y_delta = _avg(hip_y_deltas)
-    avg_chest_y_delta = _avg(chest_y_deltas)
-    avg_head_y_delta = _avg(head_y_deltas)
+    hip_downward_press = _downward_press(hip_y_values)
+    chest_downward_press = _downward_press(chest_y_values)
+    head_downward_press = _downward_press(head_y_values)
 
-    # Combined undulation score: average vertical movement across all tracked body parts
-    # Butterfly moves the whole body; freestyle keeps everything stable
-    all_deltas = [d for d in [avg_hip_y_delta, avg_chest_y_delta, avg_head_y_delta] if d is not None]
-    body_undulation_score = _avg(all_deltas)
+    down_press_values = [
+        v for v in [hip_downward_press, chest_downward_press, head_downward_press]
+        if v is not None
+    ]
+    body_undulation_score = round(sum(down_press_values) / len(down_press_values), 4) if down_press_values else None
 
-    # Classify undulation based on whole-body movement
+    # Butterfly should look like a wave: chest presses down first, then hips follow.
+    shared_len = min(len(hip_y_values), len(chest_y_values), len(head_y_values))
+    wave_steps = []
+    wave_frames = 0
+    for i in range(1, shared_len):
+        chest_step = chest_y_values[i] - chest_y_values[i - 1]
+        head_step = head_y_values[i] - head_y_values[i - 1]
+        same_frame_hip_step = hip_y_values[i] - hip_y_values[i - 1]
+        next_hip_step = hip_y_values[i + 1] - hip_y_values[i] if i + 1 < shared_len else None
+
+        chest_leads_hip = chest_step > 0 and (
+            (next_hip_step is not None and next_hip_step > 0) or same_frame_hip_step > 0
+        )
+        head_supports_entry = head_step > 0
+
+        step = {
+            "frame_pair": [i - 1, i],
+            "chest_delta": round(chest_step, 4),
+            "head_delta": round(head_step, 4),
+            "hip_delta_same_frame": round(same_frame_hip_step, 4),
+            "hip_delta_next_frame": round(next_hip_step, 4) if next_hip_step is not None else None,
+            "chest_leads_hip": chest_leads_hip,
+            "head_supports_entry": head_supports_entry,
+            "wave_downward": chest_leads_hip and head_supports_entry,
+        }
+        wave_steps.append(step)
+        if step["wave_downward"]:
+            wave_frames += 1
+
+    downward_press_ratio = round(wave_frames / len(wave_steps), 3) if wave_steps else None
+
+    # Classify undulation based on how far the body is pressed downward, not just
+    # generic motion. Thresholds are in normalized image coordinates.
     if body_undulation_score is not None:
-        if body_undulation_score > 0.025:
-            undulation_class = "high"  # strong butterfly signal — whole body waves
-        elif body_undulation_score > 0.012:
+        if body_undulation_score > 0.08 or (body_undulation_score > 0.05 and (downward_press_ratio or 0) > 0.3):
+            undulation_class = "high"  # strong butterfly signal — whole body presses downward
+        elif body_undulation_score > 0.04 or (body_undulation_score > 0.025 and (downward_press_ratio or 0) > 0.2):
             undulation_class = "moderate"  # possible butterfly
         else:
             undulation_class = "low"  # freestyle or backstroke — body stays flat
@@ -220,15 +318,23 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
         "avg_left_right_elbow_diff": _avg(elbow_diffs),
         "avg_left_right_shoulder_diff": _avg(shoulder_diffs),
         "hip_y_values": [round(v, 4) for v in hip_y_values],
+        "hip_y_range": _range(hip_y_values),
         "hip_y_deltas": [round(d, 4) for d in hip_y_deltas],
         "chest_y_values": [round(v, 4) for v in chest_y_values],
+        "chest_y_range": _range(chest_y_values),
         "chest_y_deltas": [round(d, 4) for d in chest_y_deltas],
         "head_y_values": [round(v, 4) for v in head_y_values],
+        "head_y_range": _range(head_y_values),
         "head_y_deltas": [round(d, 4) for d in head_y_deltas],
         "avg_hip_y_delta": avg_hip_y_delta,
         "avg_chest_y_delta": avg_chest_y_delta,
         "avg_head_y_delta": avg_head_y_delta,
+        "hip_downward_press": hip_downward_press,
+        "chest_downward_press": chest_downward_press,
+        "head_downward_press": head_downward_press,
         "body_undulation_score": body_undulation_score,
+        "wave_downward_ratio": downward_press_ratio,
+        "wave_downward_steps": wave_steps,
         "undulation_class": undulation_class,
         "kick_pattern": kick_pattern,
         "avg_knee_sync": avg_knee_sync,

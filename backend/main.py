@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from video_processing import extract_key_frames
 from pose_estimation import estimate_poses
-from angle_calculation import calculate_all_angles, compute_stroke_metrics
+from angle_calculation import calculate_all_angles, compute_stroke_metrics, debug_all_angles
 from claude_feedback import get_swim_feedback
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -63,6 +63,7 @@ async def analyze_video(
         t2 = time.time()
         logger.info("[3/4] Calculating joint angles...")
         angles = calculate_all_angles(pose_results)
+        angle_debug = debug_all_angles(pose_results)
         logger.info(f"[3/4] Done — angles for {len(angles)} frames in {time.time()-t2:.1f}s")
         for i, a in enumerate(angles):
             logger.info(f"  Frame {i}: {a}")
@@ -96,6 +97,7 @@ async def analyze_video(
             "frames_analyzed": len(frames),
             "feedback": feedback,
             "angles": angles,
+            "angle_debug": angle_debug,
             "stroke_metrics": stroke_metrics,
             "keypoints": keypoints_per_frame,
         })

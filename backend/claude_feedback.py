@@ -82,33 +82,48 @@ STEP 1: Identify the swimming stroke using BOTH the images AND the angle metrics
 
 CRITICAL: Read the metrics carefully. The knee_bend_class and angle data are computed from actual body tracking — trust these numbers over your visual impression of the images.
 
+IMPORTANT: Do NOT default to freestyle just because the swimmer is horizontal and moving forward. Freestyle and backstroke can both have low undulation and alternating kicks. Treat them as a separate decision pair.
+
 === STROKE IDENTIFICATION RULES (check in this order) ===
 
-RULE 1 — Check body orientation in the images:
-- Is the swimmer face-UP (on their back)? → BACKSTROKE. Stop here.
-- Is the swimmer face-DOWN or sideways? → Continue to Rule 2.
+RULE 1 — First separate out breaststroke:
+- If knee_bend_class is "very_deep" or "deep" AND min_knee_angle < 120° with substantial knee bending variability, that is a strong BREASTSTROKE signal.
+- Breaststroke is the only stroke here with a pronounced frog kick and extreme knee bend.
 
-RULE 2 — Check knee bend (from knee_bend_class metric):
-- "very_deep" or "deep" (min_knee_angle < 120°) with HIGH knee_angle_variance → BREASTSTROKE (frog kick causes extreme knee bend that no other stroke has)
-- "straight" or "moderate" (min_knee_angle > 140°) → this is a flutter kick or dolphin kick → continue to Rule 3
-- Between 120-140° → ambiguous, continue to Rule 3
+RULE 2 — Then check for butterfly:
+- body_undulation_score measures how strongly the head, chest, and hips are pushed DOWN through the stroke cycle.
+- The metrics hip_downward_press, chest_downward_press, and head_downward_press measure downward press amplitude for each body part.
+- wave_downward_ratio measures how often the body shows a wave-like downward sequence where the chest presses down first and the hips follow.
+- If undulation_class is "high", especially with clear downward press in chest and hips together, that is a strong BUTTERFLY signal.
+- If kick_pattern is "synchronized", that further supports BUTTERFLY.
+- If both arms appear to recover together over the water, that strongly supports BUTTERFLY.
 
-RULE 3 — Check whole-body undulation (from undulation_class and body_undulation_score):
-- body_undulation_score measures average vertical movement of hips, chest, AND head across frames.
-- "high" undulation (score > 0.025) → strong BUTTERFLY signal. In butterfly, the ENTIRE body moves up and down like a worm — hips, chest, and head all undulate through the water.
-- "low" undulation (score < 0.012) → FREESTYLE. In freestyle, the body stays flat and stable in the y-axis with minimal vertical movement.
-- Also check kick_pattern: "synchronized" = both legs kick together (BUTTERFLY dolphin kick), "alternating" = legs alternate (FREESTYLE flutter kick)
-- Check individual parts: if avg_chest_y_delta AND avg_hip_y_delta are both elevated, the whole body is undulating → BUTTERFLY
+RULE 3 — If the swimmer has low undulation and an alternating kick, the stroke is likely either FREESTYLE or BACKSTROKE:
+- low undulation + alternating kick should NOT automatically mean freestyle.
+- In this case, explicitly decide between FREESTYLE and BACKSTROKE using body orientation, face visibility, and arm recovery path.
 
-RULE 4 — If still ambiguous, check arm pattern in the images:
-- Both arms recover over the water simultaneously → BUTTERFLY
-- Arms alternate (one pulls while other recovers) → FREESTYLE
+RULE 4 — Distinguish backstroke from freestyle using visual cues:
+- BACKSTROKE signals:
+  - the swimmer is face-UP or torso-up in the water
+  - the face is visible across many frames
+  - the recovering arm passes upward/backward near or over the head/shoulder line
+  - recovery often looks relatively straight and vertical
+- FREESTYLE signals:
+  - the swimmer is face-DOWN or rotated downward toward the water
+  - the face is only briefly visible during breaths, or mostly not visible
+  - the recovering arm travels forward over the water rather than backward over the head
+  - recovery is more side/front-oriented rather than vertical-overhead
+
+RULE 5 — Confidence handling for freestyle vs backstroke:
+- If the evidence for face-up vs face-down orientation is weak or conflicting, do NOT guess aggressively.
+- If alternating kick + low undulation is clear but orientation is unclear, use "low" confidence.
+- If the evidence is too ambiguous to separate freestyle from backstroke, prefer "unknown" over a confident but weak guess.
 
 === CONFIDENCE CALIBRATION ===
 Be HONEST about confidence. Do NOT default to "high".
 - "high": Multiple rules clearly point to the same stroke AND the images clearly show the stroke pattern
-- "medium": Rules point to one stroke but images are unclear, OR rules are ambiguous but images suggest a stroke
-- "low": Rules conflict with each other, or data is missing/sparse, or you are not sure
+- "medium": Rules point to one stroke but one important cue is unclear
+- "low": Rules conflict with each other, or data is missing/sparse, or you are not sure, especially for freestyle vs backstroke
 
 If the angle metrics are mostly null/None, your confidence should be "medium" at best since you only have images.
 

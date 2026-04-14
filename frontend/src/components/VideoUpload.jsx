@@ -51,6 +51,7 @@ function VideoUpload({ onFeedback, onLoading, onError }) {
           frames_analyzed: res.data.frames_analyzed,
         },
         _angles: res.data.angles,
+        _angleDebug: res.data.angle_debug,
         _stroke_metrics: res.data.stroke_metrics,
         _keypoints: res.data.keypoints,
       });

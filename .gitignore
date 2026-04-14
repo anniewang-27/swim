@@ -4,5 +4,8 @@ dist/
 __pycache__/
 *.pyc
 venv/
+.venv/
+backend/venv/
+backend/.venv/
 .DS_Store
 docs/
