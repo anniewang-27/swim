@@ -9,3 +9,5 @@ backend/venv/
 backend/.venv/
 .DS_Store
 docs/
+videos/
+debug_frames_*/
