@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import math
 
+# Raised from 0.5 → 0.7 because low-confidence keypoints on underwater/low-contrast
+# swim footage cause wild angle swings (e.g. a "58° knee" from a misplaced landmark
+# that flips the whole classification to breaststroke). 0.7 trades some recall for
+# much higher precision on the kept measurements.
+MIN_VISIBILITY = 0.7
+
 
 def _angle_between(a: dict, b: dict, c: dict) -> float | None:
     """
@@ -10,7 +16,7 @@ def _angle_between(a: dict, b: dict, c: dict) -> float | None:
     Returns degrees, or None if any point has low visibility.
     """
     for pt in (a, b, c):
-        if pt.get("visibility", 0) < 0.5:
+        if pt.get("visibility", 0) < MIN_VISIBILITY:
             return None
 
     ba = (a["x"] - b["x"], a["y"] - b["y"])
@@ -55,7 +61,7 @@ def _angle_debug_info(a: dict | None, b: dict | None, c: dict | None) -> dict:
         if pt is None:
             missing.append(label)
             continue
-        if pt.get("visibility", 0) < 0.5:
+        if pt.get("visibility", 0) < MIN_VISIBILITY:
             low_visibility.append({
                 "point": label,
                 "name": pt.get("name"),
@@ -138,6 +144,25 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
     def _range(vals):
         return round(max(vals) - min(vals), 4) if len(vals) >= 2 else None
 
+    def _percentile(vals, p):
+        """Return the p-th percentile (0-100). More robust than min/max to outliers."""
+        if not vals:
+            return None
+        s = sorted(vals)
+        idx = int(round((p / 100) * (len(s) - 1)))
+        return s[max(0, min(idx, len(s) - 1))]
+
+    def _filter_outliers(vals, max_step=0.15):
+        """Drop values that jump more than max_step from the previous value.
+        Used to suppress MediaPipe keypoint jitter on single bad frames."""
+        if len(vals) < 2:
+            return vals
+        cleaned = [vals[0]]
+        for v in vals[1:]:
+            if abs(v - cleaned[-1]) <= max_step:
+                cleaned.append(v)
+        return cleaned
+
     def _avg_abs_step(vals):
         deltas = [abs(vals[i] - vals[i - 1]) for i in range(1, len(vals))]
         return _avg(deltas), deltas
@@ -184,20 +209,40 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
     all_knee = left_knee + right_knee
     knee_range = (round(max(all_knee) - min(all_knee), 1)) if len(all_knee) >= 2 else None
 
-    # Classify knee bend pattern
+    # Minimum samples needed before we trust a classification. Below this,
+    # MediaPipe has given us so few data points that any percentile is
+    # essentially one value, which makes classification brittle.
+    MIN_KNEE_SAMPLES = 6
+
     avg_knee = _avg(all_knee)
     min_knee = round(min(all_knee), 1) if all_knee else None
-    if avg_knee is not None and min_knee is not None:
-        if min_knee < 90:
-            knee_bend_class = "very_deep"  # strong breaststroke signal
-        elif min_knee < 120:
+    p10_knee = round(_percentile(all_knee, 10), 1) if all_knee else None
+    median_knee = round(_percentile(all_knee, 50), 1) if all_knee else None
+
+    # Use MEDIAN for classification when sample size is small. Median requires
+    # multiple frames to show deep bend before flipping the class, so a single
+    # misplaced landmark can't fool us into calling backstroke "breaststroke".
+    # With enough samples, p10 is better because it catches brief peak bends
+    # that are real (e.g. the breaststroke recovery phase).
+    if len(all_knee) >= MIN_KNEE_SAMPLES:
+        knee_bend_reference = p10_knee
+    else:
+        knee_bend_reference = median_knee
+
+    # Require BOTH p10 and median to indicate a deep bend before classifying very_deep.
+    # This prevents a few misplaced frames from triggering breaststroke when the
+    # bulk of frames show a straight/moderate leg (backstroke or freestyle).
+    if avg_knee is not None and knee_bend_reference is not None and len(all_knee) >= 4:
+        if knee_bend_reference < 70 and (median_knee or 999) < 110:
+            knee_bend_class = "very_deep"  # strong breaststroke signal — must be confirmed by median
+        elif knee_bend_reference < 110 and (median_knee or 999) < 135:
             knee_bend_class = "deep"  # breaststroke or butterfly
-        elif min_knee < 150:
+        elif knee_bend_reference < 140:
             knee_bend_class = "moderate"  # could be any stroke
         else:
             knee_bend_class = "straight"  # freestyle or backstroke flutter kick
     else:
-        knee_bend_class = "unknown"
+        knee_bend_class = "insufficient_data"
 
     # Body undulation: track how far head, chest, and hips are pushed DOWN
     # through the stroke. In image coordinates, larger y means lower in frame.
@@ -219,6 +264,15 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
                 chest_y_values.append((left_shoulder_kp["y"] + right_shoulder_kp["y"]) / 2)
             if nose_kp:
                 head_y_values.append(nose_kp["y"])
+
+    # Remove frame-to-frame outliers before measuring undulation. A swimmer's hip
+    # cannot physically teleport 8% of the frame height between adjacent frames
+    # on any reasonable framerate — those jumps are MediaPipe jitter, not real
+    # motion. Tightening the threshold from 0.15 → 0.08 suppresses the jitter
+    # that was inflating the "undulation" score on shaky backstroke footage.
+    hip_y_values = _filter_outliers(hip_y_values, max_step=0.08)
+    chest_y_values = _filter_outliers(chest_y_values, max_step=0.08)
+    head_y_values = _filter_outliers(head_y_values, max_step=0.08)
 
     # Frame-to-frame movement still helps, but the main butterfly signal we want is
     # the amplitude of the downward press for head, chest, and hips.
@@ -267,15 +321,28 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
 
     downward_press_ratio = round(wave_frames / len(wave_steps), 3) if wave_steps else None
 
-    # Classify undulation based on how far the body is pressed downward, not just
-    # generic motion. Thresholds are in normalized image coordinates.
-    if body_undulation_score is not None:
-        if body_undulation_score > 0.08 or (body_undulation_score > 0.05 and (downward_press_ratio or 0) > 0.3):
-            undulation_class = "high"  # strong butterfly signal — whole body presses downward
-        elif body_undulation_score > 0.04 or (body_undulation_score > 0.025 and (downward_press_ratio or 0) > 0.2):
+    # Require a minimum of 4 valid hip y-values (post-outlier-filter) before
+    # classifying undulation. Otherwise we're classifying off noise.
+    MIN_UNDULATION_SAMPLES = 4
+    has_enough_y_data = (
+        len(hip_y_values) >= MIN_UNDULATION_SAMPLES
+        and len(chest_y_values) >= MIN_UNDULATION_SAMPLES
+    )
+
+    # Classify undulation. Thresholds are in normalized image coordinates.
+    # Raised significantly because MediaPipe jitter on low-quality footage was
+    # producing fake "high" undulation scores (~0.1-0.22) on freestyle/backstroke
+    # videos where the body should be flat. True butterfly shows downward press
+    # ratio that climbs alongside the score.
+    if body_undulation_score is not None and has_enough_y_data:
+        if body_undulation_score > 0.18 and (downward_press_ratio or 0) > 0.35:
+            undulation_class = "high"  # strong butterfly signal — whole body presses downward in a wave
+        elif body_undulation_score > 0.10 and (downward_press_ratio or 0) > 0.25:
             undulation_class = "moderate"  # possible butterfly
         else:
             undulation_class = "low"  # freestyle or backstroke — body stays flat
+    elif body_undulation_score is not None:
+        undulation_class = "insufficient_data"
     else:
         undulation_class = "unknown"
 
@@ -308,6 +375,7 @@ def compute_stroke_metrics(angles: list[dict], pose_results: list[dict] = None) 
         "knee_angle_range": knee_range,
         "knee_bend_class": knee_bend_class,
         "min_knee_angle": min_knee,
+        "p10_knee_angle": p10_knee,  # what the classifier uses — robust to single outlier frames
         "max_knee_angle": round(max(all_knee), 1) if all_knee else None,
         "avg_hip_angle": _avg(left_hip + right_hip),
         "hip_angle_variance": _variance(left_hip + right_hip),
