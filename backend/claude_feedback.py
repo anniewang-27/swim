@@ -86,20 +86,28 @@ IMPORTANT: Do NOT default to freestyle just because the swimmer is horizontal an
 
 === STROKE IDENTIFICATION RULES (check in this order) ===
 
-RULE 1 — First separate out breaststroke:
-- If knee_bend_class is "very_deep" or "deep" AND min_knee_angle < 120° with substantial knee bending variability, that is a strong BREASTSTROKE signal.
-- Breaststroke is the only stroke here with a pronounced frog kick and extreme knee bend.
+CRITICAL DATA-QUALITY RULES:
+- If a metric class is "insufficient_data", MediaPipe could not reliably measure that aspect. Do NOT use that metric to classify — fall back to other signals and/or the images.
+- If metric signals CONFLICT (e.g. kick_pattern says alternating but knee_bend_class says very_deep), trust the signal that has more multi-frame support. kick_pattern is computed across ALL frames and is more robust than single-frame peak measurements.
+- When metrics conflict and images are also ambiguous, prefer "low" confidence or "unknown" over a confident guess.
 
-RULE 2 — Then check for butterfly (undulation takes priority over arm pattern):
-- body_undulation_score measures how strongly the head, chest, and hips are pushed DOWN through the stroke cycle.
-- The metrics hip_downward_press, chest_downward_press, and head_downward_press measure downward press amplitude for each body part.
-- wave_downward_ratio measures how often the body shows a wave-like downward sequence where the chest presses down first and the hips follow.
-- **If undulation_class is "high" and Rule 1 did NOT identify breaststroke, classify as BUTTERFLY.** High undulation is the defining feature of butterfly — trust this metric over arm alternation cues. Even if the arms APPEAR to alternate, high whole-body undulation means butterfly.
-- Synchronized kick_pattern and simultaneous over-water arm recovery further support BUTTERFLY but are NOT required when undulation is high.
+RULE 1 — PRIMARY signal: kick_pattern
+Kick pattern is the most reliable metric because it measures left/right symmetry across many frames.
+- "alternating" → the stroke is FREESTYLE or BACKSTROKE (legs move opposite each other in a flutter kick)
+- "synchronized" or "mostly_synchronized" → the stroke is BUTTERFLY or BREASTSTROKE (both legs move together)
+- "unknown" → insufficient data, fall back to images
 
-RULE 3 — If the swimmer has LOW undulation, the stroke is likely either FREESTYLE or BACKSTROKE:
-- Low undulation + alternating kick should NOT automatically mean freestyle.
-- In this case, explicitly decide between FREESTYLE and BACKSTROKE using body orientation, face visibility, and arm recovery path.
+RULE 2 — If kick_pattern is "alternating" (freestyle vs backstroke), use BODY ORIENTATION from the images:
+- Face UP, torso up → BACKSTROKE
+- Face DOWN or rotated side-down → FREESTYLE
+- Unclear orientation → "low" confidence, prefer "unknown"
+- Knee bend should be "straight" or "moderate" for both. If knee says "very_deep" but kick is alternating, this is MediaPipe noise — IGNORE the knee signal.
+
+RULE 3 — If kick_pattern is "synchronized" (butterfly vs breaststroke), distinguish using knee bend and undulation:
+- BREASTSTROKE: knee_bend_class is "very_deep" or "deep" (frog kick pulls knees under the body). Undulation typically lower than butterfly.
+- BUTTERFLY: knee_bend_class is "moderate" or "straight" (dolphin kick keeps legs together but fairly straight). undulation_class "high" or "moderate" (body wave).
+- If knee is deep AND undulation is clearly high → lean BUTTERFLY with a powerful kick, but this is rare; default to BREASTSTROKE unless images clearly show arms coming OVER the water.
+- Images are critical here: breaststroke arms stay underwater; butterfly arms recover over the water.
 
 RULE 4 — Distinguish backstroke from freestyle using visual cues:
 - BACKSTROKE signals:
