@@ -16,32 +16,93 @@ def _frame_to_base64(frame) -> str:
 
 
 def _gemini_request(api_key: str, parts: list, max_tokens: int = 256) -> str:
-    """Send a request to Gemini and return the last text part."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    """Send a request to Gemini and return the last text part.
 
-    for attempt in range(3):
-        response = requests.post(url, json={
-            "contents": [{"parts": parts}],
-            "generationConfig": {
-                "temperature": 0.0,
-                "maxOutputTokens": max_tokens,
-            }
-        })
+    Tries multiple models in order. 2.5-flash sometimes blocks underwater swim
+    footage with blockReason=OTHER (uncontrollable via safety settings), so we
+    fall back to older models that tend to be more permissive.
+    """
+    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-        if response.status_code in (429, 503):
-            wait = 3 * (attempt + 1)
-            logger.warning(f"Gemini {response.status_code}, retrying in {wait}s (attempt {attempt+1}/3)")
-            time.sleep(wait)
-            continue
+    # Lower safety thresholds — swim footage (shirtless underwater swimmers)
+    # was tripping the default filters with blockReason=OTHER. This is athletic
+    # content, so we only block on HIGH-probability violations.
+    safety_settings = [
+        {"category": cat, "threshold": "BLOCK_ONLY_HIGH"}
+        for cat in [
+            "HARM_CATEGORY_HARASSMENT",
+            "HARM_CATEGORY_HATE_SPEECH",
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "HARM_CATEGORY_DANGEROUS_CONTENT",
+        ]
+    ]
 
-        if not response.ok:
-            raise Exception(f"Gemini API error ({response.status_code}): {response.text}")
-        break
-    else:
-        raise Exception("Gemini API rate limit — please wait a minute and try again")
+    last_block_reason = None
 
-    data = response.json()
-    resp_parts = data["candidates"][0]["content"]["parts"]
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+        for attempt in range(3):
+            response = requests.post(url, json={
+                "contents": [{"parts": parts}],
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "maxOutputTokens": max_tokens,
+                },
+                "safetySettings": safety_settings,
+            })
+
+            if response.status_code in (429, 503):
+                wait = 3 * (attempt + 1)
+                logger.warning(f"{model} {response.status_code}, retrying in {wait}s (attempt {attempt+1}/3)")
+                time.sleep(wait)
+                continue
+
+            if not response.ok:
+                raise Exception(f"Gemini API error ({response.status_code}): {response.text}")
+            break
+        else:
+            raise Exception("Gemini API rate limit — please wait a minute and try again")
+
+        data = response.json()
+
+        if "candidates" in data:
+            logger.info(f"Using model: {model}")
+            break
+
+        # No candidates — check if it was a block and try the next model
+        prompt_feedback = data.get("promptFeedback", {})
+        last_block_reason = prompt_feedback.get("blockReason")
+        logger.warning(f"{model} returned no candidates (blockReason={last_block_reason}) — trying next model")
+
+    if "candidates" not in data:
+        logger.error(f"All models blocked the request. Last response: {json.dumps(data)[:500]}")
+        if "error" in data:
+            raise Exception(f"Gemini API error: {data['error'].get('message', 'unknown')}")
+        if last_block_reason:
+            raise Exception(
+                f"All Gemini models blocked this video (reason: {last_block_reason}). "
+                "This sometimes happens with underwater footage. Try a video with clearer visibility above water."
+            )
+        raise Exception("Gemini returned no candidates — response may have been blocked or truncated")
+
+    candidate = data["candidates"][0]
+    finish_reason = candidate.get("finishReason", "")
+
+    # Common finish reasons: STOP (normal), MAX_TOKENS (truncated), SAFETY (blocked), RECITATION
+    if finish_reason in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKED"):
+        logger.error(f"Gemini blocked the response (finishReason={finish_reason})")
+        raise Exception(f"Gemini declined to answer (finishReason={finish_reason}). Try a different video.")
+
+    content = candidate.get("content", {})
+    resp_parts = content.get("parts", [])
+
+    if not resp_parts:
+        logger.error(f"Gemini response has no parts. finishReason={finish_reason}, candidate={json.dumps(candidate)[:500]}")
+        if finish_reason == "MAX_TOKENS":
+            raise Exception("Gemini response was truncated. Try again — sometimes it works on retry.")
+        raise Exception(f"Gemini returned empty response (finishReason={finish_reason})")
+
     response_text = ""
     for part in resp_parts:
         if "text" in part:
