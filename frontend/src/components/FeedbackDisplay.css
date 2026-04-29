@@ -4,6 +4,33 @@
   gap: 1.5rem;
 }
 
+.detected-stroke-label {
+  font-size: 1rem;
+  color: #555;
+  margin-bottom: 0.75rem;
+  text-transform: capitalize;
+}
+
+.detected-stroke-label strong {
+  color: #0077b6;
+  font-size: 1.15rem;
+}
+
+.stroke-reasoning {
+  margin-top: 0.4rem;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.warning-banner {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 12px;
+  padding: 1rem 1.5rem;
+  color: #856404;
+  font-size: 0.95rem;
+}
+
 .score-card {
   background: white;
   border-radius: 12px;

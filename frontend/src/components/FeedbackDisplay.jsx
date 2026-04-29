@@ -11,11 +11,23 @@ function FeedbackDisplay({ feedback }) {
 
   return (
     <div className="feedback">
-      {/* Overall Score */}
-      {feedback.overall_score && (
+      {/* Pose Warning */}
+      {feedback.pose_warning && (
+        <div className="warning-banner">{feedback.pose_warning}</div>
+      )}
+
+      {/* Combined Stroke + Score Card */}
+      {(feedback.detected_stroke || feedback.overall_score) && (
         <div className="score-card">
-          <div className="score-number">{feedback.overall_score}/10</div>
-          <p className="score-summary">{feedback.summary}</p>
+          {feedback.detected_stroke && (
+            <div className="detected-stroke-label">
+              Detected stroke: <strong>{feedback.detected_stroke}</strong>
+            </div>
+          )}
+          {feedback.overall_score && (
+            <div className="score-number">{feedback.overall_score}/10</div>
+          )}
+          {feedback.summary && <p className="score-summary">{feedback.summary}</p>}
         </div>
       )}
 

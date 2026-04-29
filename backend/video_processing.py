@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 # Target number of evenly-spaced frames to sample from the video.
-TARGET_FRAMES = 10
+TARGET_FRAMES = 20
 
 
 def extract_key_frames(video_path: str, target_frames: int = TARGET_FRAMES) -> list[np.ndarray]:

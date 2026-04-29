@@ -4,16 +4,8 @@ import "./VideoUpload.css";
 
 const API_URL = "http://localhost:8000";
 
-const STROKES = [
-  { value: "freestyle", label: "Freestyle" },
-  { value: "butterfly", label: "Butterfly" },
-  { value: "backstroke", label: "Backstroke" },
-  { value: "breaststroke", label: "Breaststroke" },
-];
-
 function VideoUpload({ onFeedback, onLoading, onError }) {
   const [file, setFile] = useState(null);
-  const [stroke, setStroke] = useState("freestyle");
   const [preview, setPreview] = useState(null);
   const inputRef = useRef();
 
@@ -36,12 +28,24 @@ function VideoUpload({ onFeedback, onLoading, onError }) {
 
     const formData = new FormData();
     formData.append("video", file);
-    formData.append("stroke", stroke);
 
     try {
       const res = await axios.post(`${API_URL}/analyze`, formData);
       console.log("API response:", JSON.stringify(res.data, null, 2));
-      onFeedback(res.data.feedback);
+
+      onFeedback({
+        ...res.data.feedback,
+        _meta: {
+          stroke_hint: res.data.stroke_hint,
+          detected_stroke: res.data.detected_stroke,
+          detected_confidence: res.data.detected_confidence,
+          frames_analyzed: res.data.frames_analyzed,
+        },
+        _angles: res.data.angles,
+        _angleDebug: res.data.angle_debug,
+        _stroke_metrics: res.data.stroke_metrics,
+        _keypoints: res.data.keypoints,
+      });
     } catch (err) {
       onError(err.response?.data?.detail || "Something went wrong. Please try again.");
     } finally {
@@ -70,12 +74,6 @@ function VideoUpload({ onFeedback, onLoading, onError }) {
       </div>
 
       <div className="upload-controls">
-        <select value={stroke} onChange={(e) => setStroke(e.target.value)}>
-          {STROKES.map((s) => (
-            <option key={s.value} value={s.value}>{s.label}</option>
-          ))}
-        </select>
-
         <button type="submit" disabled={!file}>
           Analyze Technique
         </button>

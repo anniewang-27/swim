@@ -31,16 +31,17 @@ function App() {
 
         {error && <div className="error-banner">{error}</div>}
 
-        {feedback && (
-          <>
-            <FeedbackDisplay feedback={feedback} />
-            <details style={{marginTop: "1rem"}}>
-              <summary>Debug: Raw API response</summary>
-              <pre style={{fontSize: "0.8rem", overflow: "auto"}}>{JSON.stringify(feedback, null, 2)}</pre>
-            </details>
-          </>
-        )}
+        {feedback && <FeedbackDisplay feedback={feedback} />}
       </main>
+
+      <footer className="app-footer">
+        <p>
+          <strong>Disclaimer:</strong> This tool uses AI and computer vision to analyze swim technique.
+          AI can make mistakes — feedback may be inaccurate or incomplete. Always use your own judgment,
+          and consult a qualified coach for personalized guidance. This tool is not a substitute for
+          professional instruction.
+        </p>
+      </footer>
     </div>
   );
 }
